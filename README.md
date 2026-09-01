@@ -53,7 +53,9 @@ docker compose logs -f strategy
 
 ## Bot-Befehle
 
-`/status` · `/positions` · `/halt` (keine neuen Entries, Exits laufen weiter) · `/resume`
+`/status` · `/positions` · `/report` (Portfolio-Auswertung + Equity-Chart) · `/halt` (keine neuen Entries, Exits laufen weiter) · `/resume`
+
+Täglicher Report automatisch um `REPORT_HOUR` Uhr (`REPORT_TZ`, Default 08:00 Europe/Zurich); `-1` schaltet ihn aus.
 
 ## Ablauf
 

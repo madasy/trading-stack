@@ -34,6 +34,10 @@ KRAKEN_API_KEY    = _env("KRAKEN_API_KEY")
 KRAKEN_API_SECRET = _env("KRAKEN_API_SECRET")
 LIVE_CONFIRM      = _env("LIVE_CONFIRM", "")
 
+REPORT_TZ         = _env("REPORT_TZ", "Europe/Zurich")
+REPORT_HOUR       = _env("REPORT_HOUR", 8, int)        # daily report at this local hour; -1 = off
+SNAPSHOT_MINUTES  = _env("SNAPSHOT_MINUTES", 60, int)  # equity snapshot interval for the chart
+
 # Redis queues / keys shared by all services
 Q_SIGNALS   = "q:signals"     # strategy -> bot   (needs approval)
 Q_DECISIONS = "q:decisions"   # bot/strategy -> executor

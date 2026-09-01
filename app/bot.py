@@ -7,7 +7,10 @@ import redis.asyncio as aioredis
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
-from . import config, db
+from . import config, db, report
+from aiogram.types import BufferedInputFile
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from .models import Signal, Decision
 
 log = logging.getLogger("bot")
@@ -124,17 +127,57 @@ async def cmd_resume(m: Message):
     await r.delete(config.K_HALTED)
     await m.answer("🟢 Resumed.")
 
+async def send_report(chat_id: int):
+    m = await asyncio.to_thread(report.mark_to_market)
+    text = await asyncio.to_thread(report.build_text, m)
+    png = await asyncio.to_thread(report.build_chart, 30)
+    if png:
+        await bot.send_photo(chat_id, BufferedInputFile(png, "equity.png"), caption=text, parse_mode="HTML")
+    else:
+        await bot.send_message(chat_id, text + "\n\n<i>Chart folgt, sobald genügend Datenpunkte vorliegen.</i>",
+                               parse_mode="HTML")
+
+@dp.message(Command("report"))
+async def cmd_report(m: Message):
+    if not allowed(m.from_user.id): return
+    await send_report(m.chat.id)
+
+async def snapshot_loop():
+    while True:
+        try:
+            await asyncio.to_thread(report.snapshot)
+        except Exception as exc:
+            log.warning("snapshot failed: %s", exc)
+        await asyncio.sleep(config.SNAPSHOT_MINUTES * 60)
+
+async def daily_report_loop():
+    if config.REPORT_HOUR < 0:
+        return
+    tz = ZoneInfo(config.REPORT_TZ)
+    while True:
+        now = datetime.now(tz)
+        nxt = now.replace(hour=config.REPORT_HOUR, minute=0, second=0, microsecond=0)
+        if nxt <= now:
+            nxt += timedelta(days=1)
+        await asyncio.sleep((nxt - now).total_seconds())
+        try:
+            await send_report(UID)
+        except Exception as exc:
+            log.warning("daily report failed: %s", exc)
+
 @dp.message(Command("start", "help"))
 async def cmd_help(m: Message):
     if not allowed(m.from_user.id):
         await m.answer(f"Your id is {m.from_user.id}. This bot is private."); return
-    await m.answer("Commands: /status /positions /halt /resume")
+    await m.answer("Commands: /status /positions /report /halt /resume")
 
 async def main():
     db.init_schema()
     log.info("bot up, allowed user %s", UID)
     asyncio.create_task(consume_signals())
     asyncio.create_task(consume_notify())
+    asyncio.create_task(snapshot_loop())
+    asyncio.create_task(daily_report_loop())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":

@@ -4,3 +4,4 @@ numpy>=1.26
 redis>=5.0
 psycopg[binary]>=3.1
 aiogram>=3.4
+matplotlib>=3.8

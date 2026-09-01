@@ -132,3 +132,30 @@ def stats() -> dict:
                FROM positions WHERE status='closed'"""
         ).fetchone()
     return {"closed": r["n"], "wins": r["wins"], "pnl": float(r["pnl"])}
+
+
+# ---------- reporting ----------
+
+def insert_snapshot(equity: float, realized: float, unrealized: float):
+    with conn() as c:
+        c.execute("INSERT INTO equity_snapshots(equity,realized,unrealized) VALUES (%s,%s,%s)",
+                  (equity, realized, unrealized))
+
+
+def snapshots(days: int = 30) -> list[dict]:
+    with conn() as c:
+        return c.execute(
+            "SELECT ts, equity FROM equity_snapshots WHERE ts > now() - make_interval(days => %s) ORDER BY ts",
+            (days,)).fetchall()
+
+
+def closed_positions(limit: int = 10) -> list[dict]:
+    with conn() as c:
+        return c.execute(
+            "SELECT * FROM positions WHERE status='closed' ORDER BY closed_at DESC LIMIT %s", (limit,)).fetchall()
+
+
+def signal_counts() -> dict:
+    with conn() as c:
+        rows = c.execute("SELECT status, COUNT(*) AS n FROM signals GROUP BY status").fetchall()
+    return {r["status"]: r["n"] for r in rows}

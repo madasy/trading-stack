@@ -44,3 +44,11 @@ CREATE TABLE IF NOT EXISTS trades (
   broker      TEXT NOT NULL,
   order_id    TEXT
 );
+
+CREATE TABLE IF NOT EXISTS equity_snapshots (
+  ts          TIMESTAMPTZ NOT NULL DEFAULT now(),
+  equity      NUMERIC NOT NULL,
+  realized    NUMERIC NOT NULL,
+  unrealized  NUMERIC NOT NULL
+);
+CREATE INDEX IF NOT EXISTS equity_snapshots_ts ON equity_snapshots(ts);
