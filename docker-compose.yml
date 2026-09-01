@@ -1,0 +1,68 @@
+x-app-env: &app-env
+  REDIS_URL: redis://redis:6379/0
+  DATABASE_URL: postgresql://trader:${POSTGRES_PASSWORD:-change-me}@db:5432/trading
+  TELEGRAM_TOKEN: ${TELEGRAM_TOKEN}
+  ALLOWED_USER_ID: ${ALLOWED_USER_ID:-0}
+  SYMBOLS: ${SYMBOLS:-BTC/USD,ETH/USD}
+  TIMEFRAME: ${TIMEFRAME:-4h}
+  EMA_LEN: ${EMA_LEN:-200}
+  ST_LEN: ${ST_LEN:-10}
+  ST_MULT: ${ST_MULT:-3.0}
+  POLL_SECONDS: ${POLL_SECONDS:-120}
+  SIGNAL_TTL_MIN: ${SIGNAL_TTL_MIN:-60}
+  PAPER_CAPITAL: ${PAPER_CAPITAL:-10000}
+  RISK_PCT: ${RISK_PCT:-1.0}
+  MAX_POSITIONS: ${MAX_POSITIONS:-2}
+  AUTO_EXIT: ${AUTO_EXIT:-true}
+  BROKER: ${BROKER:-paper}
+  KRAKEN_API_KEY: ${KRAKEN_API_KEY:-}
+  KRAKEN_API_SECRET: ${KRAKEN_API_SECRET:-}
+  LIVE_CONFIRM: ${LIVE_CONFIRM:-}
+
+x-app: &app
+  build: .
+  image: trading-stack-app:latest
+  environment: *app-env
+  restart: unless-stopped
+  depends_on:
+    db: { condition: service_healthy }
+    redis: { condition: service_started }
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes: [redis-data:/data]
+    command: ["redis-server", "--appendonly", "yes"]
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: trader
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      POSTGRES_DB: trading
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trader -d trading"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  strategy:
+    <<: *app
+    command: ["python", "-m", "app.strategy"]
+
+  bot:
+    <<: *app
+    command: ["python", "-m", "app.bot"]
+
+  executor:
+    <<: *app
+    command: ["python", "-m", "app.executor"]
+
+volumes:
+  redis-data:
+  pg-data:

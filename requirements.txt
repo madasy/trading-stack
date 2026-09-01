@@ -1,0 +1,6 @@
+ccxt>=4.3
+pandas>=2.2
+numpy>=1.26
+redis>=5.0
+psycopg[binary]>=3.1
+aiogram>=3.4
