@@ -34,6 +34,11 @@ KRAKEN_API_KEY    = _env("KRAKEN_API_KEY")
 KRAKEN_API_SECRET = _env("KRAKEN_API_SECRET")
 LIVE_CONFIRM      = _env("LIVE_CONFIRM", "")
 
+AUTO_APPROVE      = _env("AUTO_APPROVE", "night")     # off | night | always  (runtime override via /auto)
+QUIET_HOURS       = _env("QUIET_HOURS", "22-07")      # local hours for "night" mode, e.g. 22-07
+AUTO_ON_EXPIRE    = _env("AUTO_ON_EXPIRE", True, bool) # unanswered signal -> auto-approve instead of expire
+AUTO_APPROVE_LIVE = _env("AUTO_APPROVE_LIVE", "")     # must be I_UNDERSTAND to auto-approve with BROKER=kraken
+
 REPORT_TZ         = _env("REPORT_TZ", "Europe/Zurich")
 REPORT_HOUR       = _env("REPORT_HOUR", 8, int)        # daily report at this local hour; -1 = off
 SNAPSHOT_MINUTES  = _env("SNAPSHOT_MINUTES", 60, int)  # equity snapshot interval for the chart
@@ -43,3 +48,4 @@ Q_SIGNALS   = "q:signals"     # strategy -> bot   (needs approval)
 Q_DECISIONS = "q:decisions"   # bot/strategy -> executor
 Q_NOTIFY    = "q:notify"      # executor/strategy -> bot (plain text to user)
 K_HALTED    = "k:halted"      # kill-switch flag
+K_AUTO      = "k:auto"        # runtime override for AUTO_APPROVE

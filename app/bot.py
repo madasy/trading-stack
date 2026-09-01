@@ -43,22 +43,65 @@ def card(sig: Signal) -> str:
     lines.append(f"⏳ expires in {config.SIGNAL_TTL_MIN} min")
     return "\n".join(lines)
 
+# ---------- auto-approve ----------
+
+async def auto_mode() -> str:
+    v = await r.get(config.K_AUTO)
+    return v.decode() if v else config.AUTO_APPROVE
+
+def in_quiet_hours() -> bool:
+    try:
+        start, end = (int(x) for x in config.QUIET_HOURS.split("-"))
+    except ValueError:
+        return False
+    h = datetime.now(ZoneInfo(config.REPORT_TZ)).hour
+    return (start <= h or h < end) if start > end else (start <= h < end)
+
+def auto_allowed() -> bool:
+    return config.BROKER == "paper" or config.AUTO_APPROVE_LIVE == "I_UNDERSTAND"
+
+async def should_auto_approve() -> str | None:
+    """Returns a reason string if the signal should be approved without asking, else None."""
+    if not auto_allowed():
+        return None
+    mode = await auto_mode()
+    if mode == "always":
+        return "auto (mode: always)"
+    if mode == "night" and in_quiet_hours():
+        return f"auto (quiet hours {config.QUIET_HOURS})"
+    return None
+
+async def approve(signal_id: int, by: str):
+    db.set_signal_status(signal_id, "approved")
+    db.insert_decision(signal_id, "yes", by)
+    await r.rpush(config.Q_DECISIONS, Decision(signal_id, "yes", by).to_json())
+
 async def expire_later(signal_id: int, chat_id: int, message_id: int):
     await asyncio.sleep(config.SIGNAL_TTL_MIN * 60)
-    if db.signal_status(signal_id) == "pending":
+    if db.signal_status(signal_id) != "pending":
+        return
+    try:
+        await bot.edit_message_reply_markup(chat_id, message_id, reply_markup=None)
+    except Exception:
+        pass
+    if config.AUTO_ON_EXPIRE and auto_allowed():
+        await approve(signal_id, "auto-expire")
+        await bot.send_message(chat_id, f"🤖 Signal #{signal_id}: keine Antwort in {config.SIGNAL_TTL_MIN} min → automatisch freigegeben.")
+    else:
         db.set_signal_status(signal_id, "expired")
         db.insert_decision(signal_id, "expired", "timeout")
-        try:
-            await bot.edit_message_reply_markup(chat_id, message_id, reply_markup=None)
-            await bot.send_message(chat_id, f"⌛ Signal #{signal_id} expired (no answer).")
-        except Exception:
-            pass
+        await bot.send_message(chat_id, f"⌛ Signal #{signal_id} verfallen (keine Antwort).")
 
 async def consume_signals():
     while True:
         try:
             _, raw = await r.blpop(config.Q_SIGNALS)
             sig = Signal.from_json(raw.decode())
+            reason = await should_auto_approve()
+            if reason:
+                await approve(sig.id, reason)
+                await bot.send_message(UID, card(sig) + f"\n\n🤖 <i>{reason}</i>", parse_mode="HTML")
+                continue
             msg = await bot.send_message(UID, card(sig), parse_mode="HTML", reply_markup=keyboard(sig.id))
             asyncio.create_task(expire_later(sig.id, msg.chat.id, msg.message_id))
         except Exception as exc:
@@ -102,7 +145,8 @@ async def cmd_status(m: Message):
         f"Equity: {equity:.2f} USD (realized PnL {s['pnl']:+.2f})\n"
         f"Closed trades: {s['closed']}, win rate {wr}\n"
         f"Open positions: {len(db.open_positions())}/{config.MAX_POSITIONS}\n"
-        f"Strategy: {config.TIMEFRAME} EMA{config.EMA_LEN} + ST({config.ST_LEN},{config.ST_MULT})",
+        f"Strategy: {config.TIMEFRAME} EMA{config.EMA_LEN} + ST({config.ST_LEN},{config.ST_MULT})\n"
+        f"Auto-Entscheider: {await auto_mode()}",
         parse_mode="HTML")
 
 @dp.message(Command("positions"))
@@ -114,6 +158,22 @@ async def cmd_positions(m: Message):
     lines = [f"• {p['symbol']}: {float(p['qty'])} @ {float(p['entry_price']):.2f}, stop {float(p['stop'] or 0):.2f}"
              for p in pos]
     await m.answer("\n".join(lines))
+
+@dp.message(Command("auto"))
+async def cmd_auto(m: Message):
+    if not allowed(m.from_user.id): return
+    arg = (m.text.split(maxsplit=1)[1].strip().lower() if len(m.text.split()) > 1 else "")
+    if arg in ("off", "night", "always"):
+        await r.set(config.K_AUTO, arg)
+    elif arg:
+        await m.answer("Usage: /auto off | night | always"); return
+    mode = await auto_mode()
+    live_note = "" if auto_allowed() else "\n⚠️ Live-Broker: Auto-Freigabe deaktiviert (AUTO_APPROVE_LIVE fehlt)"
+    await m.answer(f"Auto-Entscheider: <b>{mode}</b>"
+                   f"{' – aktiv, Ruhezeit ' + config.QUIET_HOURS if mode == 'night' else ''}\n"
+                   f"Ohne Antwort nach {config.SIGNAL_TTL_MIN} min: "
+                   f"{'automatisch freigeben' if config.AUTO_ON_EXPIRE else 'verwerfen'}{live_note}",
+                   parse_mode="HTML")
 
 @dp.message(Command("halt"))
 async def cmd_halt(m: Message):
@@ -169,7 +229,7 @@ async def daily_report_loop():
 async def cmd_help(m: Message):
     if not allowed(m.from_user.id):
         await m.answer(f"Your id is {m.from_user.id}. This bot is private."); return
-    await m.answer("Commands: /status /positions /report /halt /resume")
+    await m.answer("Commands: /status /positions /report /auto /halt /resume")
 
 async def main():
     db.init_schema()

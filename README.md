@@ -55,6 +55,8 @@ docker compose logs -f strategy
 
 `/status` · `/positions` · `/report` (Portfolio-Auswertung + Equity-Chart) · `/halt` (keine neuen Entries, Exits laufen weiter) · `/resume`
 
+`/auto off|night|always` schaltet den Auto-Entscheider um (`AUTO_APPROVE`, Ruhezeit `QUIET_HOURS`). Mit `AUTO_ON_EXPIRE=true` werden unbeantwortete Signale nach `SIGNAL_TTL_MIN` automatisch freigegeben statt verworfen. Bei `BROKER=kraken` greift der Auto-Entscheider nur mit `AUTO_APPROVE_LIVE=I_UNDERSTAND`.
+
 Täglicher Report automatisch um `REPORT_HOUR` Uhr (`REPORT_TZ`, Default 08:00 Europe/Zurich); `-1` schaltet ihn aus.
 
 ## Ablauf
