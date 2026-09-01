@@ -44,7 +44,6 @@ services:
       POSTGRES_DB: trading
     volumes:
       - pg-data:/var/lib/postgresql/data
-      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U trader -d trading"]
       interval: 5s

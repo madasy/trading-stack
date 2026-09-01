@@ -92,6 +92,7 @@ def evaluate(symbol: str):
 
 
 def main():
+    db.init_schema()
     log.info("strategy up: %s %s EMA%d ST(%d,%.1f) broker=%s", config.SYMBOLS, config.TIMEFRAME,
              config.EMA_LEN, config.ST_LEN, config.ST_MULT, config.BROKER)
     while True:

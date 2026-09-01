@@ -52,6 +52,7 @@ def handle(dec: Decision):
                f"Reason: {sig.reason}")
 
 def main():
+    db.init_schema()
     log.info("executor up, broker=%s", broker.name)
     notify(f"🤖 Executor started (broker: <b>{broker.name}</b>).")
     while True:

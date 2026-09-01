@@ -1,4 +1,7 @@
 """Thin synchronous Postgres journal (psycopg 3)."""
+import time
+from pathlib import Path
+
 import psycopg
 from psycopg.rows import dict_row
 from . import config
@@ -7,6 +10,23 @@ from .models import Signal
 
 def conn():
     return psycopg.connect(config.DATABASE_URL, row_factory=dict_row, autocommit=True)
+
+
+SCHEMA_PATH = Path(__file__).resolve().parent.parent / "db" / "init.sql"
+
+
+def init_schema(retries: int = 30, delay: float = 2.0):
+    """Create tables if missing (idempotent). Retries while Postgres is still starting."""
+    sql = SCHEMA_PATH.read_text()
+    for attempt in range(retries):
+        try:
+            with conn() as c:
+                c.execute(sql)
+            return
+        except psycopg.OperationalError:
+            if attempt == retries - 1:
+                raise
+            time.sleep(delay)
 
 
 # ---------- signals / decisions ----------

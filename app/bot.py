@@ -131,6 +131,7 @@ async def cmd_help(m: Message):
     await m.answer("Commands: /status /positions /halt /resume")
 
 async def main():
+    db.init_schema()
     log.info("bot up, allowed user %s", UID)
     asyncio.create_task(consume_signals())
     asyncio.create_task(consume_notify())
