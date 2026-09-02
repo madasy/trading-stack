@@ -85,3 +85,42 @@ def test_map_symbol():
     assert backtest.map_symbol("BTC/USD", "binance") == "BTC/USDT"
     assert backtest.map_symbol("BTC/USD", "bitstamp") == "BTC/USD"
     assert backtest.map_symbol("BTC/USDT", "binance") == "BTC/USDT"
+
+
+def test_load_or_fetch_first_fetch_and_incremental(monkeypatch, tmp_path):
+    import ccxt
+    now_ms = int(pd.Timestamp("2026-01-10 10:00", tz="UTC").timestamp() * 1000)
+    tf_ms = 4 * 3600 * 1000
+    calls = []
+
+    class FakeExchange:
+        rateLimit = 0
+
+        def __init__(self, *a, **k):
+            pass
+
+        def parse_timeframe(self, tf):
+            return 4 * 3600
+
+        def milliseconds(self):
+            return now_ms
+
+        def parse8601(self, s):
+            return int(pd.Timestamp(s).timestamp() * 1000)
+
+        def fetch_ohlcv(self, symbol, timeframe, since=None, limit=1000):
+            calls.append(since)
+            start = pd.Timestamp("2026-01-01", tz="UTC").timestamp() * 1000
+            rows = [[int(start + i * tf_ms), 100.0, 101.0, 99.0, 100.5, 1.0] for i in range(60)]   # last one is still forming
+            return [r for r in rows if r[0] >= since][:limit]
+
+    monkeypatch.setattr(ccxt, "binance", FakeExchange)
+    df = backtest.load_or_fetch("binance", "BTC/USDT", "4h", "2026-01-01", tmp_path)
+    assert str(df["ts"].dtype).startswith("datetime64") and df["ts"].dt.tz is not None      # first fetch: real datetimes
+    assert df["ts"].iloc[-1] + pd.Timedelta(milliseconds=tf_ms) <= pd.Timestamp(now_ms, unit="ms", tz="UTC")
+    n_first, n_calls = len(df), len(calls)
+    df2 = backtest.load_or_fetch("binance", "BTC/USDT", "4h", "2026-01-01", tmp_path)     # cached + incremental
+    assert len(df2) == n_first and str(df2["ts"].dtype).startswith("datetime64")
+    assert calls[n_calls:] and calls[n_calls] > calls[0]                                    # resumed after the cached candles
+    y = backtest.yearly(pd.Series(1.0, index=pd.Index(df2["ts"])), pd.DataFrame(), 1.0)
+    assert list(y.year) == [2026]

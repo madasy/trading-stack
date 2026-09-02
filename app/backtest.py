@@ -55,8 +55,11 @@ def load_or_fetch(exchange_id: str, symbol: str, timeframe: str, since: str, dat
         cursor = nxt
     new = pd.DataFrame(rows, columns=COLUMNS)
     new["ts"] = pd.to_datetime(new["ts"], unit="ms", utc=True)
-    df = pd.concat([cached, new]).drop_duplicates("ts").sort_values("ts")
-    df = df[df["ts"] + pd.Timedelta(milliseconds=tf_ms) <= pd.Timestamp.now(tz="UTC")]  # closed candles only
+    df = pd.concat([cached, new]) if len(cached) else new
+    df = df.drop_duplicates("ts").sort_values("ts")
+    df["ts"] = pd.to_datetime(df["ts"], utc=True)                       # keep a real DatetimeIndex on the first fetch too
+    now = pd.Timestamp(ex.milliseconds(), unit="ms", tz="UTC")
+    df = df[df["ts"] + pd.Timedelta(milliseconds=tf_ms) <= now]         # closed candles only (exchange clock)
     df.to_csv(path, index=False)
     return df.reset_index(drop=True)
 

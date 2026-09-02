@@ -33,8 +33,8 @@ REJECT_COOLDOWN_BARS = _env("REJECT_COOLDOWN_BARS", 6, int)   # candles without 
 
 PAPER_CAPITAL     = _env("PAPER_CAPITAL", 10000.0, float)
 RISK_PCT          = _env("RISK_PCT", 1.0, float)      # percent of capital risked per trade
-MAX_NOTIONAL_PCT  = _env("MAX_NOTIONAL_PCT", 50.0, float)   # position size cap in percent of capital (spot, no leverage)
 MAX_POSITIONS     = _env("MAX_POSITIONS", 2, int)
+MAX_NOTIONAL_PCT  = _env("MAX_NOTIONAL_PCT", 100.0 / MAX_POSITIONS, float)   # size cap per position in % of capital; default keeps all positions <= 100 % (spot)
 AUTO_EXIT         = _env("AUTO_EXIT", True, bool)
 
 BROKER            = _env("BROKER", "paper")            # paper | kraken

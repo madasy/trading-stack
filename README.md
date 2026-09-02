@@ -81,7 +81,7 @@ python -m pytest -q
 | `REJECT_COOLDOWN_BARS` | 6 | Candles ohne neues Entry-Signal nach einem abgelehnten Signal |
 | `PAPER_CAPITAL` | 10000 | Start-Kapital (Paper) |
 | `RISK_PCT` | 1.0 | **Prozent** des Kapitals Risiko pro Trade (Entry − Stop) |
-| `MAX_NOTIONAL_PCT` | 50 | Obergrenze Positionsgrösse in % des Kapitals (Spot, kein Hebel) |
+| `MAX_NOTIONAL_PCT` | 100 ÷ `MAX_POSITIONS` | Obergrenze pro Position in % des Kapitals; Default hält alle Positionen zusammen unter 100 % (Spot, kein Hebel) |
 | `MAX_POSITIONS` | 2 | max. gleichzeitig offene Positionen |
 | `AUTO_EXIT` | true | Exits ohne Rückfrage; `false` = auch Exits per Ja/Nein |
 | `BROKER` | paper | `paper` oder `kraken` |
