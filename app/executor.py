@@ -3,8 +3,9 @@ Executor: consumes approved/auto decisions, applies risk checks, places orders v
 records fills and positions, notifies the user.
 """
 import logging, time
+from datetime import datetime, timezone
 import redis
-from . import config, db
+from . import config, db, postmortem
 from .brokers import get_broker
 from .models import Decision
 
@@ -34,7 +35,7 @@ def handle(dec: Decision):
             notify(f"⚠️ Signal #{sig.id} skipped: already in {sig.symbol}."); return
         fill = broker.market_buy(sig.symbol, sig.qty)
         db.insert_trade(sig.id, sig.symbol, "buy", fill.qty, fill.price, broker.name, fill.order_id)
-        db.open_position(sig.symbol, fill.qty, fill.price, sig.stop)
+        db.open_position(sig.symbol, fill.qty, fill.price, sig.stop, entry_signal_id=sig.id)
         db.set_signal_status(sig.id, "executed")
         notify(f"🟢 <b>BOUGHT {sig.symbol}</b> {fill.qty} @ {fill.price:.2f} (stop {sig.stop:.2f}) [{broker.name}]")
 
@@ -45,11 +46,15 @@ def handle(dec: Decision):
             notify(f"⚠️ Exit #{sig.id}: no open position in {sig.symbol}."); return
         fill = broker.market_sell(sig.symbol, float(pos["qty"]))
         db.insert_trade(sig.id, sig.symbol, "sell", fill.qty, fill.price, broker.name, fill.order_id)
-        pnl = db.close_position(pos["id"], fill.price)
+        entry_sig = db.get_signal(pos["entry_signal_id"]) if pos.get("entry_signal_id") else None
+        line, stats = postmortem.summary(float(pos["entry_price"]), fill.price, entry_sig.stop if entry_sig else None,
+                                         pos["opened_at"], datetime.now(timezone.utc), sig.context,
+                                         entry_sig.context if entry_sig else None)
+        pnl = db.close_position(pos["id"], fill.price, **stats)
         db.set_signal_status(sig.id, "executed")
         pct = pnl / (float(pos["entry_price"]) * float(pos["qty"])) * 100
         notify(f"🔴 <b>SOLD {sig.symbol}</b> {fill.qty} @ {fill.price:.2f} → PnL {pnl:+.2f} USD ({pct:+.2f}%)\n"
-               f"Reason: {sig.reason}")
+               f"Reason: {sig.reason}\n{line}")
 
 def main():
     db.init_schema()

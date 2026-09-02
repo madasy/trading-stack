@@ -4,6 +4,7 @@ from pathlib import Path
 
 import psycopg
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 from . import config
 from .models import Signal
 
@@ -34,9 +35,10 @@ def init_schema(retries: int = 30, delay: float = 2.0):
 def insert_signal(sig: Signal, status="pending") -> int:
     with conn() as c:
         row = c.execute(
-            """INSERT INTO signals(candle_ts,symbol,kind,side,price,stop,qty,reason,status)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
-            (sig.candle_ts, sig.symbol, sig.kind, sig.side, sig.price, sig.stop, sig.qty, sig.reason, status),
+            """INSERT INTO signals(candle_ts,symbol,kind,side,price,stop,qty,reason,status,context)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+            (sig.candle_ts, sig.symbol, sig.kind, sig.side, sig.price, sig.stop, sig.qty, sig.reason, status,
+             Jsonb(sig.context) if sig.context is not None else None),
         ).fetchone()
         return row["id"]
 
@@ -52,6 +54,7 @@ def get_signal(signal_id: int) -> Signal | None:
         float(r["stop"]) if r["stop"] is not None else None,
         float(r["qty"]) if r["qty"] is not None else None,
         r["reason"] or "",
+        r.get("context"),
     )
 
 
@@ -72,6 +75,13 @@ def insert_decision(signal_id: int, decision: str, by: str):
                   (signal_id, decision, by))
 
 
+def last_entry_signal(symbol: str) -> dict | None:
+    with conn() as c:
+        return c.execute(
+            "SELECT status, candle_ts FROM signals WHERE symbol=%s AND kind='entry' ORDER BY id DESC LIMIT 1",
+            (symbol,)).fetchone()
+
+
 # ---------- positions / trades ----------
 
 def open_positions() -> list[dict]:
@@ -84,26 +94,37 @@ def open_position_for(symbol: str) -> dict | None:
         return c.execute("SELECT * FROM positions WHERE status='open' AND symbol=%s", (symbol,)).fetchone()
 
 
-def open_position(symbol: str, qty: float, price: float, stop: float | None) -> int:
+def open_position(symbol: str, qty: float, price: float, stop: float | None, entry_signal_id: int | None = None) -> int:
     with conn() as c:
         return c.execute(
-            "INSERT INTO positions(symbol,qty,entry_price,stop) VALUES (%s,%s,%s,%s) RETURNING id",
-            (symbol, qty, price, stop),
+            "INSERT INTO positions(symbol,qty,entry_price,stop,entry_signal_id) VALUES (%s,%s,%s,%s,%s) RETURNING id",
+            (symbol, qty, price, stop, entry_signal_id),
         ).fetchone()["id"]
 
 
-def update_stop(position_id: int, stop: float):
+def update_stop(position_id: int, stop: float, old_stop: float | None = None, candle_ts: str | None = None,
+                reason: str | None = None):
+    """Move the stop and keep the history (one row per change)."""
     with conn() as c:
         c.execute("UPDATE positions SET stop=%s WHERE id=%s", (stop, position_id))
+        c.execute("INSERT INTO stop_updates(position_id,candle_ts,old_stop,new_stop,reason) VALUES (%s,%s,%s,%s,%s)",
+                  (position_id, candle_ts, old_stop, stop, reason))
 
 
-def close_position(position_id: int, exit_price: float) -> float:
+def stop_updates(position_id: int) -> list[dict]:
+    with conn() as c:
+        return c.execute("SELECT * FROM stop_updates WHERE position_id=%s ORDER BY id", (position_id,)).fetchall()
+
+
+def close_position(position_id: int, exit_price: float, r_multiple: float | None = None,
+                   mfe_pct: float | None = None, mae_pct: float | None = None) -> float:
     with conn() as c:
         p = c.execute("SELECT qty, entry_price FROM positions WHERE id=%s", (position_id,)).fetchone()
         pnl = (exit_price - float(p["entry_price"])) * float(p["qty"])
         c.execute(
-            "UPDATE positions SET status='closed', closed_at=now(), exit_price=%s, pnl=%s WHERE id=%s",
-            (exit_price, pnl, position_id),
+            """UPDATE positions SET status='closed', closed_at=now(), exit_price=%s, pnl=%s,
+                                    r_multiple=%s, mfe_pct=%s, mae_pct=%s WHERE id=%s""",
+            (exit_price, pnl, r_multiple, mfe_pct, mae_pct, position_id),
         )
         return pnl
 

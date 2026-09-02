@@ -21,11 +21,19 @@ TIMEFRAME         = _env("TIMEFRAME", "4h")
 EMA_LEN           = _env("EMA_LEN", 200, int)
 ST_LEN            = _env("ST_LEN", 10, int)
 ST_MULT           = _env("ST_MULT", 3.0, float)
+ADX_LEN           = _env("ADX_LEN", 14, int)
+ADX_MIN           = _env("ADX_MIN", 20.0, float)       # entries only while ADX > this; 0 = off
+BREAKOUT_LEN      = _env("BREAKOUT_LEN", 20, int)      # close must exceed the high of the last N candles; 0 = off
+ENTRY_MODE        = _env("ENTRY_MODE", "state")        # state (v3) | flip (v2: only on the red->green candle)
+_regime           = _env("REGIME_SYMBOL", "BTC/USD").strip()
+REGIME_SYMBOL     = "" if _regime.lower() in ("off", "none", "0") else _regime   # gates entries in the other symbols
 POLL_SECONDS      = _env("POLL_SECONDS", 120, int)
 SIGNAL_TTL_MIN    = _env("SIGNAL_TTL_MIN", 60, int)
+REJECT_COOLDOWN_BARS = _env("REJECT_COOLDOWN_BARS", 6, int)   # candles without a new entry signal after a rejection
 
 PAPER_CAPITAL     = _env("PAPER_CAPITAL", 10000.0, float)
 RISK_PCT          = _env("RISK_PCT", 1.0, float)      # percent of capital risked per trade
+MAX_NOTIONAL_PCT  = _env("MAX_NOTIONAL_PCT", 50.0, float)   # position size cap in percent of capital (spot, no leverage)
 MAX_POSITIONS     = _env("MAX_POSITIONS", 2, int)
 AUTO_EXIT         = _env("AUTO_EXIT", True, bool)
 

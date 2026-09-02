@@ -1,12 +1,12 @@
 """
-Strategy service: EMA-200 regime filter + Supertrend(10,3) entries/exits, long-only.
-Evaluates once per *closed* candle per symbol and pushes signals to Redis.
+Strategy service (v3 "Trend-Breakout", rules in app/rules.py): evaluates once per *closed* candle per
+symbol and pushes signals to Redis. The regime symbol (BTC) is fetched first; its own trend gates entries
+in the other symbols.
 """
 import json
-import logging, time
+import logging, math, time
 import ccxt, pandas as pd, redis
-from . import config, db
-from .indicators import ema, supertrend
+from . import config, db, postmortem, rules
 from .models import Signal, Decision, now_iso
 
 log = logging.getLogger("strategy")
@@ -14,6 +14,21 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname
 
 r = redis.from_url(config.REDIS_URL)
 ex = ccxt.kraken({"enableRateLimit": True})
+
+TF_SECONDS = ccxt.Exchange.parse_timeframe(config.TIMEFRAME)
+
+P = rules.Params(ema_len=config.EMA_LEN, st_len=config.ST_LEN, st_mult=config.ST_MULT, adx_len=config.ADX_LEN,
+                 adx_min=config.ADX_MIN, breakout_len=config.BREAKOUT_LEN, entry_mode=config.ENTRY_MODE)
+
+CHECK_LABELS = {                     # shown in /scan and on the signal card
+    "supertrend_green": "Supertrend grün",
+    "above_ema": f"Close > EMA{config.EMA_LEN}",
+    "supertrend_flip": "Supertrend-Flip",
+    "adx": f"ADX > {config.ADX_MIN:g}",
+    "breakout": f"{config.BREAKOUT_LEN}-Candle-Hoch",
+    "market": f"Regime {config.REGIME_SYMBOL}",
+    "stop_below_close": "Stop unter Kurs",
+}
 
 
 def fetch_closed_candles(symbol: str) -> pd.DataFrame:
@@ -23,13 +38,8 @@ def fetch_closed_candles(symbol: str) -> pd.DataFrame:
     return df.iloc[:-1].reset_index(drop=True)          # drop the still-forming candle
 
 
-def risk_qty(entry: float, stop: float) -> float | None:
-    capital = config.PAPER_CAPITAL + db.realized_pnl()
-    risk_amount = capital * config.RISK_PCT / 100
-    per_unit = entry - stop
-    if per_unit <= 0:
-        return None
-    return round(risk_amount / per_unit, 6)
+def capital() -> float:
+    return config.PAPER_CAPITAL + db.realized_pnl()
 
 
 def emit_for_approval(sig: Signal):
@@ -45,24 +55,57 @@ def emit_auto(sig: Signal):
     log.info("auto signal #%s %s %s", sig.id, sig.kind, sig.symbol)
 
 
-def publish_state(symbol, ts_iso, close, e, st_line, d_now, d_prev):
-    """Market-check snapshot for /status and the daily report."""
+def _num(v):
+    v = float(v)
+    return None if math.isnan(v) else v
+
+
+def publish_state(symbol, ts_iso, row, prev, checks, pos, market_ok):
+    """Market-check snapshot for /status, /scan and the daily report."""
+    close, e, st_line = float(row["close"]), float(row["ema"]), float(row["st"])
+    hh = _num(row["hh"])
     state = {
         "candle_ts": ts_iso, "evaluated_at": now_iso(),
-        "close": close, "ema": e, "st": st_line, "dir": d_now, "flip": d_now != d_prev,
+        "close": close, "ema": e, "st": st_line, "dir": int(row["dir"]), "flip": int(row["dir"]) != int(prev["dir"]),
+        "adx": _num(row["adx"]), "hh": hh, "market_ok": bool(market_ok),
         "above_ema": close > e,
         "dist_st_pct": (close - st_line) / close * 100,     # + = above line (uptrend), - = below
         "dist_ema_pct": (close - e) / close * 100,
+        "dist_hh_pct": (close - hh) / close * 100 if hh else None,   # + = closed above the previous N-candle high
+        "checks": checks,
+        "blockers": [CHECK_LABELS.get(k, k) for k, ok in checks.items() if not ok],
+        "in_position": pos is not None,
+        "stop": float(pos["stop"]) if pos is not None and pos["stop"] is not None else None,
     }
     r.hset(config.K_STATE, symbol, json.dumps(state))
     r.rpush(config.K_EVALS, now_iso())
     r.ltrim(config.K_EVALS, -2000, -1)
+    return state
 
 
-def evaluate(symbol: str):
-    df = fetch_closed_candles(symbol)
-    if len(df) < config.EMA_LEN + 5:
-        log.warning("%s: not enough candles (%d)", symbol, len(df))
+def in_cooldown(symbol: str, df: pd.DataFrame) -> bool:
+    """No new entry signal for REJECT_COOLDOWN_BARS candles after the user rejected one (or let it expire)."""
+    last = db.last_entry_signal(symbol)
+    if not last or last["status"] not in ("rejected", "expired"):
+        return False
+    bars_since = int((df["ts"] > last["candle_ts"]).sum())
+    return bars_since < config.REJECT_COOLDOWN_BARS
+
+
+def entry_reason(row, checks) -> str:
+    bits = [f"ST grün (Linie {float(row['st']):.2f})", f"Close > EMA{config.EMA_LEN} {float(row['ema']):.2f}"]
+    if "adx" in checks:
+        bits.append(f"ADX {float(row['adx']):.1f} > {config.ADX_MIN:g}")
+    if "breakout" in checks:
+        bits.append(f"neues {config.BREAKOUT_LEN}-Candle-Hoch (> {float(row['hh']):.2f})")
+    if config.REGIME_SYMBOL:
+        bits.append(f"Regime {config.REGIME_SYMBOL} ✓")
+    return "Trend-Breakout: " + ", ".join(bits)
+
+
+def evaluate(symbol: str, df: pd.DataFrame, market_ok: bool = True):
+    if len(df) < P.warmup:
+        log.warning("%s: not enough candles (%d < %d)", symbol, len(df), P.warmup)
         return
     last_ts = df["ts"].iloc[-1]
     ts_iso = last_ts.isoformat()
@@ -70,35 +113,39 @@ def evaluate(symbol: str):
     if (r.get(key) or b"").decode() == ts_iso:
         return                                            # this candle was already processed
 
-    df["ema"] = ema(df["close"], config.EMA_LEN)
-    st = supertrend(df, config.ST_LEN, config.ST_MULT)
-    close, e = float(df["close"].iloc[-1]), float(df["ema"].iloc[-1])
-    st_line = float(st["st"].iloc[-1])
-    d_now, d_prev = int(st["dir"].iloc[-1]), int(st["dir"].iloc[-2])
-    log.info("%s close=%.2f ema=%.2f st=%.2f dir=%d (prev %d)", symbol, close, e, st_line, d_now, d_prev)
-    publish_state(symbol, ts_iso, close, e, st_line, d_now, d_prev)
+    d = rules.prepare(df, P)
+    row, prev = d.iloc[-1], d.iloc[-2]
+    close, st_line = float(row["close"]), float(row["st"])
+    checks = rules.entry_checks(row, prev, P, market_ok)
+    log.info("%s close=%.2f ema=%.2f st=%.2f dir=%d adx=%.1f hh=%s market=%s checks=%s", symbol, close, float(row["ema"]),
+             st_line, int(row["dir"]), float(row["adx"]), f"{float(row['hh']):.2f}" if _num(row["hh"]) else "-", market_ok,
+             ",".join(k for k, ok in checks.items() if not ok) or "all ok")
 
     pos = db.open_position_for(symbol)
-    if pos is None:
-        if d_prev == -1 and d_now == 1 and close > e:
-            qty = risk_qty(close, st_line)
-            if qty:
-                emit_for_approval(Signal(
-                    None, ts_iso, symbol, "entry", "buy", close, st_line, qty,
-                    f"Supertrend flipped green, close {close:.2f} > EMA{config.EMA_LEN} {e:.2f}"))
-    else:
-        current_stop = float(pos["stop"]) if pos["stop"] is not None else st_line
-        new_stop = max(current_stop, st_line) if d_now == 1 else current_stop   # trail upward only
-        if pos["stop"] is None or new_stop > current_stop:
-            db.update_stop(pos["id"], new_stop)
+    state = publish_state(symbol, ts_iso, row, prev, checks, pos, market_ok)
 
-        exit_reason = None
-        if d_now == -1:
-            exit_reason = "Supertrend flipped red"
-        elif close <= new_stop:
-            exit_reason = f"Close {close:.2f} below stop {new_stop:.2f}"
+    if pos is None:
+        if all(checks.values()):
+            if len(db.open_positions()) >= config.MAX_POSITIONS:
+                log.info("%s: entry conditions met but MAX_POSITIONS=%d reached", symbol, config.MAX_POSITIONS)
+            elif in_cooldown(symbol, df):
+                log.info("%s: entry conditions met but in cooldown after a rejected signal", symbol)
+            else:
+                qty = rules.risk_qty(capital(), config.RISK_PCT, close, st_line, config.MAX_NOTIONAL_PCT)
+                if qty:
+                    context = {k: v for k, v in state.items() if k not in ("evaluated_at", "in_position", "stop")}
+                    emit_for_approval(Signal(None, ts_iso, symbol, "entry", "buy", close, st_line, qty,
+                                             entry_reason(row, checks), context=context))
+    else:
+        current_stop = float(pos["stop"]) if pos["stop"] is not None else None
+        new_stop = rules.trail_stop(row, current_stop)              # trails upward only
+        if current_stop is None or new_stop > current_stop:
+            db.update_stop(pos["id"], new_stop, old_stop=current_stop, candle_ts=ts_iso, reason="Supertrend trail")
+        exit_reason = rules.exit_reason(row, new_stop)
         if exit_reason:
-            sig = Signal(None, ts_iso, symbol, "exit", "sell", close, None, float(pos["qty"]), exit_reason)
+            held = postmortem.candles_since(df, pos["opened_at"], TF_SECONDS) if pos.get("opened_at") else df.iloc[0:0]
+            exc = postmortem.excursion(held, float(pos["entry_price"]))
+            sig = Signal(None, ts_iso, symbol, "exit", "sell", close, None, float(pos["qty"]), exit_reason, context=exc)
             if config.AUTO_EXIT:
                 emit_auto(sig)
             else:
@@ -107,15 +154,37 @@ def evaluate(symbol: str):
     r.set(key, ts_iso)
 
 
+def market_regime(frames: dict[str, pd.DataFrame]) -> bool:
+    """Uptrend of the regime symbol (above EMA and Supertrend green). True when the filter is off or data is missing."""
+    sym = config.REGIME_SYMBOL
+    if not sym:
+        return True
+    if sym not in frames or len(frames[sym]) < P.warmup:
+        log.warning("regime symbol %s has no data yet, not gating entries this round", sym)
+        return True
+    return rules.market_uptrend(rules.prepare(frames[sym], P).iloc[-1])
+
+
 def main():
     db.init_schema()
-    log.info("strategy up: %s %s EMA%d ST(%d,%.1f) broker=%s", config.SYMBOLS, config.TIMEFRAME,
-             config.EMA_LEN, config.ST_LEN, config.ST_MULT, config.BROKER)
+    log.info("strategy up: %s %s EMA%d ST(%d,%.1f) ADX(%d)>%g breakout=%d regime=%s entry=%s broker=%s",
+             config.SYMBOLS, config.TIMEFRAME, config.EMA_LEN, config.ST_LEN, config.ST_MULT, config.ADX_LEN, config.ADX_MIN,
+             config.BREAKOUT_LEN, config.REGIME_SYMBOL or "off", config.ENTRY_MODE, config.BROKER)
+    needed = list(dict.fromkeys(config.SYMBOLS + ([config.REGIME_SYMBOL] if config.REGIME_SYMBOL else [])))
     while True:
-        for symbol in config.SYMBOLS:
+        frames = {}
+        for symbol in needed:
             try:
-                evaluate(symbol)
+                frames[symbol] = fetch_closed_candles(symbol)
             except Exception as exc:                      # keep the loop alive
+                log.exception("%s: fetch failed: %s", symbol, exc)
+        market_ok = market_regime(frames)
+        for symbol in config.SYMBOLS:
+            if symbol not in frames:
+                continue
+            try:
+                evaluate(symbol, frames[symbol], market_ok if symbol != config.REGIME_SYMBOL else True)
+            except Exception as exc:
                 log.exception("%s: %s", symbol, exc)
         time.sleep(config.POLL_SECONDS)
 

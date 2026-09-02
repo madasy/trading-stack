@@ -18,7 +18,7 @@ _r = redis.from_url(config.REDIS_URL)
 
 
 def market_check(hours: int = 24) -> str:
-    """Per-symbol state of the last evaluation + how many candles were evaluated in the last N hours."""
+    """Per-symbol state of the last evaluation: every entry condition and what is still missing."""
     tz = ZoneInfo(config.REPORT_TZ)
     since = datetime.now(tz).timestamp() - hours * 3600
     evals = [t.decode() for t in _r.lrange(config.K_EVALS, 0, -1)]
@@ -30,21 +30,32 @@ def market_check(hours: int = 24) -> str:
     if not states:
         lines.append("• noch keine Auswertung")
         return "\n".join(lines)
+    regime = config.REGIME_SYMBOL
+    if regime and regime.encode() in states:
+        rs = json.loads(states[regime.encode()])
+        ok = rs["dir"] == 1 and rs["above_ema"]
+        lines.append(f"Regime {regime}: {'🟢 Uptrend – Entries erlaubt' if ok else '🔴 aus – keine Entries in den anderen Symbolen'}")
     for sym in config.SYMBOLS:
         raw = states.get(sym.encode())
         if not raw:
             lines.append(f"• {sym}: noch keine Daten"); continue
         st = json.loads(raw)
         trend = "🟢 Uptrend" if st["dir"] == 1 else "🔴 Downtrend"
-        ema_ok = "über" if st["above_ema"] else "unter"
-        if st["dir"] == 1:
-            why = f"Stop-Linie {abs(st['dist_st_pct']):.1f} % unter Kurs"
-            hint = "wartet auf Flip rot→grün" if not st["flip"] else "Flip auf grün!"
+        parts = [f"{'über' if st['above_ema'] else 'unter'} EMA{config.EMA_LEN} ({st['dist_ema_pct']:+.1f} %)"]
+        if st.get("adx") is not None:
+            parts.append(f"ADX {st['adx']:.0f}")
+        if st.get("dist_hh_pct") is not None:
+            parts.append(f"{config.BREAKOUT_LEN}-Candle-Hoch {st['dist_hh_pct']:+.1f} %")
+        if st.get("in_position"):
+            status = f"in Position, Stop {abs(st['dist_st_pct']):.1f} % unter Kurs"
+        elif st["dir"] == 1:
+            blockers = st.get("blockers", [])
+            status = "alle Bedingungen erfüllt → Entry-Signal" if not blockers else "fehlt: " + ", ".join(blockers)
         else:
-            why = f"Flip braucht +{abs(st['dist_st_pct']):.1f} %"
-            hint = "" if st["above_ema"] else "und Kurs muss über EMA"
-        lines.append(f"• {sym}: {trend}, {ema_ok} EMA{config.EMA_LEN} ({st['dist_ema_pct']:+.1f} %), {why}"
-                     + (f" – {hint}" if hint else ""))
+            status = f"Flip auf grün braucht +{abs(st['dist_st_pct']):.1f} %"
+            if not st["above_ema"]:
+                status += " und Kurs über EMA"
+        lines.append(f"• {sym}: {trend}, {', '.join(parts)} – {status}")
     return "\n".join(lines)
 
 
@@ -109,8 +120,9 @@ def build_text(m: dict) -> str:
         lines += ["", "<b>Letzte Trades</b>"]
         for p in last:
             pct = (float(p["exit_price"]) - float(p["entry_price"])) / float(p["entry_price"]) * 100
+            r_txt = f", {float(p['r_multiple']):+.1f} R" if p.get("r_multiple") is not None else ""
             lines.append(f"• {p['closed_at'].astimezone(tz).strftime('%d.%m')} {p['symbol']} "
-                         f"{float(p['pnl']):+.2f} USD ({pct:+.2f} %)")
+                         f"{float(p['pnl']):+.2f} USD ({pct:+.2f} %{r_txt})")
     return "\n".join(lines)
 
 

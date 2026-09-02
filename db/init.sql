@@ -52,3 +52,21 @@ CREATE TABLE IF NOT EXISTS equity_snapshots (
   unrealized  NUMERIC NOT NULL
 );
 CREATE INDEX IF NOT EXISTS equity_snapshots_ts ON equity_snapshots(ts);
+
+-- v3 journal extensions (idempotent)
+ALTER TABLE signals   ADD COLUMN IF NOT EXISTS context JSONB;             -- entry: indicator snapshot; exit: excursion while open
+ALTER TABLE positions ADD COLUMN IF NOT EXISTS entry_signal_id BIGINT REFERENCES signals(id);
+ALTER TABLE positions ADD COLUMN IF NOT EXISTS r_multiple NUMERIC;        -- pnl in units of the initial risk
+ALTER TABLE positions ADD COLUMN IF NOT EXISTS mfe_pct NUMERIC;           -- best excursion vs entry while open (%)
+ALTER TABLE positions ADD COLUMN IF NOT EXISTS mae_pct NUMERIC;           -- worst excursion vs entry while open (%)
+
+CREATE TABLE IF NOT EXISTS stop_updates (
+  id          BIGSERIAL PRIMARY KEY,
+  position_id BIGINT REFERENCES positions(id),
+  ts          TIMESTAMPTZ NOT NULL DEFAULT now(),
+  candle_ts   TIMESTAMPTZ,
+  old_stop    NUMERIC,
+  new_stop    NUMERIC NOT NULL,
+  reason      TEXT
+);
+CREATE INDEX IF NOT EXISTS stop_updates_position ON stop_updates(position_id);

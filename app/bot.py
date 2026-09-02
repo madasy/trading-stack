@@ -145,7 +145,10 @@ async def cmd_status(m: Message):
         f"Equity: {equity:.2f} USD (realized PnL {s['pnl']:+.2f})\n"
         f"Closed trades: {s['closed']}, win rate {wr}\n"
         f"Open positions: {len(db.open_positions())}/{config.MAX_POSITIONS}\n"
-        f"Strategy: {config.TIMEFRAME} EMA{config.EMA_LEN} + ST({config.ST_LEN},{config.ST_MULT})\n"
+        f"Strategy: {config.TIMEFRAME} EMA{config.EMA_LEN} + ST({config.ST_LEN},{config.ST_MULT})"
+        f"{' + ADX>' + format(config.ADX_MIN, 'g') if config.ADX_MIN > 0 else ''}"
+        f"{' + Breakout' + str(config.BREAKOUT_LEN) if config.BREAKOUT_LEN > 0 else ''}"
+        f"{' + Regime ' + config.REGIME_SYMBOL if config.REGIME_SYMBOL else ''}\n"
         f"Auto-Entscheider: {await auto_mode()}\n\n"
         + await asyncio.to_thread(report.market_check),
         parse_mode="HTML")

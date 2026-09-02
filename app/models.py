@@ -13,6 +13,7 @@ class Signal:
     stop: float | None
     qty: float | None
     reason: str
+    context: dict | None = None   # entry: indicator snapshot at signal time; exit: excursion while open
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))

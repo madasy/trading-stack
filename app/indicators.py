@@ -46,3 +46,25 @@ def supertrend(df: pd.DataFrame, length: int = 10, mult: float = 3.0) -> pd.Data
         line[i] = f_lower[i] if direction[i] == 1 else f_upper[i]
 
     return pd.DataFrame({"st": line, "dir": direction}, index=df.index)
+
+
+def adx(df: pd.DataFrame, length: int = 14) -> pd.Series:
+    """Average Directional Index like TradingView's ta.dmi (Wilder smoothing, same length for DI and ADX)."""
+    up = df["high"].diff()
+    down = -df["low"].diff()
+    plus_dm = pd.Series(np.where((up > down) & (up > 0), up, 0.0), index=df.index)
+    minus_dm = pd.Series(np.where((down > up) & (down > 0), down, 0.0), index=df.index)
+    prev_close = df["close"].shift(1)
+    tr = pd.concat(
+        [df["high"] - df["low"], (df["high"] - prev_close).abs(), (df["low"] - prev_close).abs()],
+        axis=1,
+    ).max(axis=1)
+
+    def rma(s: pd.Series) -> pd.Series:
+        return s.ewm(alpha=1 / length, adjust=False).mean()
+
+    tr_s = rma(tr)
+    plus_di = 100 * rma(plus_dm) / tr_s
+    minus_di = 100 * rma(minus_dm) / tr_s
+    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+    return rma(dx)
