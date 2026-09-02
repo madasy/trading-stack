@@ -2,11 +2,12 @@
 Strategy service: EMA-200 regime filter + Supertrend(10,3) entries/exits, long-only.
 Evaluates once per *closed* candle per symbol and pushes signals to Redis.
 """
+import json
 import logging, time
 import ccxt, pandas as pd, redis
 from . import config, db
 from .indicators import ema, supertrend
-from .models import Signal, Decision
+from .models import Signal, Decision, now_iso
 
 log = logging.getLogger("strategy")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -44,6 +45,20 @@ def emit_auto(sig: Signal):
     log.info("auto signal #%s %s %s", sig.id, sig.kind, sig.symbol)
 
 
+def publish_state(symbol, ts_iso, close, e, st_line, d_now, d_prev):
+    """Market-check snapshot for /status and the daily report."""
+    state = {
+        "candle_ts": ts_iso, "evaluated_at": now_iso(),
+        "close": close, "ema": e, "st": st_line, "dir": d_now, "flip": d_now != d_prev,
+        "above_ema": close > e,
+        "dist_st_pct": (close - st_line) / close * 100,     # + = above line (uptrend), - = below
+        "dist_ema_pct": (close - e) / close * 100,
+    }
+    r.hset(config.K_STATE, symbol, json.dumps(state))
+    r.rpush(config.K_EVALS, now_iso())
+    r.ltrim(config.K_EVALS, -2000, -1)
+
+
 def evaluate(symbol: str):
     df = fetch_closed_candles(symbol)
     if len(df) < config.EMA_LEN + 5:
@@ -61,6 +76,7 @@ def evaluate(symbol: str):
     st_line = float(st["st"].iloc[-1])
     d_now, d_prev = int(st["dir"].iloc[-1]), int(st["dir"].iloc[-2])
     log.info("%s close=%.2f ema=%.2f st=%.2f dir=%d (prev %d)", symbol, close, e, st_line, d_now, d_prev)
+    publish_state(symbol, ts_iso, close, e, st_line, d_now, d_prev)
 
     pos = db.open_position_for(symbol)
     if pos is None:

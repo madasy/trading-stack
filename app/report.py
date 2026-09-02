@@ -1,9 +1,11 @@
 """Portfolio report: mark-to-market, text summary and equity-curve chart (PNG bytes)."""
 import io
+import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import ccxt
+import redis
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -12,6 +14,38 @@ import matplotlib.dates as mdates
 from . import config, db
 
 _ex = ccxt.kraken({"enableRateLimit": True})
+_r = redis.from_url(config.REDIS_URL)
+
+
+def market_check(hours: int = 24) -> str:
+    """Per-symbol state of the last evaluation + how many candles were evaluated in the last N hours."""
+    tz = ZoneInfo(config.REPORT_TZ)
+    since = datetime.now(tz).timestamp() - hours * 3600
+    evals = [t.decode() for t in _r.lrange(config.K_EVALS, 0, -1)]
+    n_recent = sum(1 for t in evals if datetime.fromisoformat(t).timestamp() >= since)
+    last_eval = max(evals) if evals else None
+    lines = [f"<b>Markt-Check</b> ({n_recent} Candle-Auswertungen in {hours} h"
+             + (f", letzte {datetime.fromisoformat(last_eval).astimezone(tz).strftime('%H:%M')})" if last_eval else ")")]
+    states = _r.hgetall(config.K_STATE)
+    if not states:
+        lines.append("• noch keine Auswertung")
+        return "\n".join(lines)
+    for sym in config.SYMBOLS:
+        raw = states.get(sym.encode())
+        if not raw:
+            lines.append(f"• {sym}: noch keine Daten"); continue
+        st = json.loads(raw)
+        trend = "🟢 Uptrend" if st["dir"] == 1 else "🔴 Downtrend"
+        ema_ok = "über" if st["above_ema"] else "unter"
+        if st["dir"] == 1:
+            why = f"Stop-Linie {abs(st['dist_st_pct']):.1f} % unter Kurs"
+            hint = "wartet auf Flip rot→grün" if not st["flip"] else "Flip auf grün!"
+        else:
+            why = f"Flip braucht +{abs(st['dist_st_pct']):.1f} %"
+            hint = "" if st["above_ema"] else "und Kurs muss über EMA"
+        lines.append(f"• {sym}: {trend}, {ema_ok} EMA{config.EMA_LEN} ({st['dist_ema_pct']:+.1f} %), {why}"
+                     + (f" – {hint}" if hint else ""))
+    return "\n".join(lines)
 
 
 def _price(symbol: str) -> float:
@@ -58,6 +92,10 @@ def build_text(m: dict) -> str:
              f"Signale: {sc.get('executed', 0)} ausgeführt, {sc.get('rejected', 0)} abgelehnt, "
              f"{sc.get('expired', 0)} verfallen, {sc.get('pending', 0)} offen",
              ""]
+    try:
+        lines += [market_check(), ""]
+    except Exception as exc:
+        lines += [f"Markt-Check nicht verfügbar: {exc}", ""]
     if m["positions"]:
         lines.append("<b>Offene Positionen</b>")
         for p in m["positions"]:
@@ -99,7 +137,10 @@ def build_chart(days: int = 30) -> bytes | None:
                     markersize=7, linestyle="none")
     ax.set_title(f"Equity – letzte {days} Tage ({config.BROKER})")
     ax.set_ylabel("USD")
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%d.%m", tz=tz))
+    span_days = (ts[-1] - ts[0]).total_seconds() / 86400
+    fmt = "%d.%m %H:%M" if span_days < 3 else "%d.%m"
+    ax.xaxis.set_major_formatter(mdates.DateFormatter(fmt, tz=tz))
+    ax.xaxis.set_major_locator(mdates.AutoDateLocator(maxticks=8))
     ax.grid(alpha=0.3)
     fig.autofmt_xdate()
     fig.tight_layout()

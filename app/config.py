@@ -49,3 +49,5 @@ Q_DECISIONS = "q:decisions"   # bot/strategy -> executor
 Q_NOTIFY    = "q:notify"      # executor/strategy -> bot (plain text to user)
 K_HALTED    = "k:halted"      # kill-switch flag
 K_AUTO      = "k:auto"        # runtime override for AUTO_APPROVE
+K_STATE     = "k:state"       # hash symbol -> JSON of last evaluation (market check)
+K_EVALS     = "k:evals"       # list of evaluation timestamps (activity counter)

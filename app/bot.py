@@ -146,7 +146,8 @@ async def cmd_status(m: Message):
         f"Closed trades: {s['closed']}, win rate {wr}\n"
         f"Open positions: {len(db.open_positions())}/{config.MAX_POSITIONS}\n"
         f"Strategy: {config.TIMEFRAME} EMA{config.EMA_LEN} + ST({config.ST_LEN},{config.ST_MULT})\n"
-        f"Auto-Entscheider: {await auto_mode()}",
+        f"Auto-Entscheider: {await auto_mode()}\n\n"
+        + await asyncio.to_thread(report.market_check),
         parse_mode="HTML")
 
 @dp.message(Command("positions"))
@@ -197,6 +198,11 @@ async def send_report(chat_id: int):
         await bot.send_message(chat_id, text + "\n\n<i>Chart folgt, sobald genügend Datenpunkte vorliegen.</i>",
                                parse_mode="HTML")
 
+@dp.message(Command("scan"))
+async def cmd_scan(m: Message):
+    if not allowed(m.from_user.id): return
+    await m.answer(await asyncio.to_thread(report.market_check), parse_mode="HTML")
+
 @dp.message(Command("report"))
 async def cmd_report(m: Message):
     if not allowed(m.from_user.id): return
@@ -229,7 +235,7 @@ async def daily_report_loop():
 async def cmd_help(m: Message):
     if not allowed(m.from_user.id):
         await m.answer(f"Your id is {m.from_user.id}. This bot is private."); return
-    await m.answer("Commands: /status /positions /report /auto /halt /resume")
+    await m.answer("Commands: /status /scan /positions /report /auto /halt /resume")
 
 async def main():
     db.init_schema()
