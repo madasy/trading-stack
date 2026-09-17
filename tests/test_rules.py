@@ -96,7 +96,7 @@ def test_risk_qty_basic_cap_and_invalid():
     assert rules.risk_qty(10_000, 1.0, 100.0, 95.0) == 20.0
     # tight stop would be 250 units = 250% of capital -> capped at 50% notional = 50 units
     assert rules.risk_qty(10_000, 1.0, 100.0, 99.6, max_notional_pct=50) == 50.0
-    assert rules.risk_qty(10_000, 1.0, 100.0, 99.6, max_notional_pct=0) == 250.0
+    assert rules.risk_qty(10_000, 1.0, 100.0, 99.6, max_notional_pct=0) == pytest.approx(250.0)
     assert rules.risk_qty(10_000, 1.0, 100.0, 100.0) is None
     assert rules.risk_qty(10_000, 1.0, 100.0, 101.0) is None
     assert rules.risk_qty(0, 1.0, 100.0, 95.0) is None
@@ -105,3 +105,33 @@ def test_risk_qty_basic_cap_and_invalid():
 def test_warmup_covers_longest_lookback():
     assert Params().warmup >= 200
     assert Params(ema_len=50, breakout_len=100).warmup >= 100
+
+
+def test_rising_adx_filter_rejects_flat_falling_and_missing():
+    p = Params(adx_rising=True)
+    row = dict(dir=1, close=110, ema=100, adx=24, hh=109, st=103)
+    for prior, expected in [(23, True), (24, False), (25, False), (float('nan'), False)]:
+        assert rules.entry_checks(row, dict(adx=prior), p)['adx_rising'] is expected
+
+
+def test_channel_exit_excludes_current_low(trend_up):
+    p = Params(exit_len=12)
+    d = rules.prepare(trend_up, p)
+    assert d.ll.iloc[-1] == pytest.approx(d.low.iloc[-13:-1].min())
+    row = dict(dir=1, close=105, ll=106)
+    assert '12-candle low' in rules.exit_reason(row, 100, p)
+    assert rules.exit_reason(row, 100, Params()) is None
+    assert rules.exit_reason(dict(row, close=106), 100, p) is None
+
+
+def test_portfolio_budget_and_invalid_sizing():
+    positions = [dict(entry_price=100, stop=95, qty=10)]  # $50 risk
+    assert rules.available_risk_pct(10000, positions, 1) == pytest.approx(.5)
+    assert rules.available_risk_pct(10000, positions * 2, 1) == 0
+    assert rules.available_risk_pct(10000, [dict(entry_price=100, stop=None, qty=10)], 1) == 0
+    assert rules.available_risk_pct(10000, [dict(entry_price=100, stop=101, qty=10)], 1) == 1
+    for value in [float('nan'), float('inf')]:
+        assert rules.risk_qty(10000, 1, value, 95) is None
+    assert rules.risk_qty(10000, 0, 100, 95) is None
+    assert rules.risk_qty(10000, -1, 100, 95) is None
+    assert rules.risk_qty(10000, 1, 103, 96) * 7 <= 100

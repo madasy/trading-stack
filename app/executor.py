@@ -2,10 +2,10 @@
 Executor: consumes approved/auto decisions, applies risk checks, places orders via the broker,
 records fills and positions, notifies the user.
 """
-import logging, time
+import logging, math, time
 from datetime import datetime, timezone
 import redis
-from . import config, db, postmortem
+from . import config, db, postmortem, rules
 from .brokers import get_broker
 from .models import Decision
 
@@ -27,13 +27,23 @@ def handle(dec: Decision):
         if r.get(config.K_HALTED):
             db.set_signal_status(sig.id, "failed")
             notify(f"🛑 Signal #{sig.id} skipped: bot is halted."); return
-        if len(db.open_positions()) >= config.MAX_POSITIONS:
+        positions = db.open_positions()
+        if len(positions) >= config.MAX_POSITIONS:
             db.set_signal_status(sig.id, "failed")
             notify(f"⚠️ Signal #{sig.id} skipped: max positions ({config.MAX_POSITIONS}) reached."); return
         if db.open_position_for(sig.symbol):
             db.set_signal_status(sig.id, "failed")
             notify(f"⚠️ Signal #{sig.id} skipped: already in {sig.symbol}."); return
-        fill = broker.market_buy(sig.symbol, sig.qty)
+        # Approval can arrive long after the candle. Never increase the approved quantity,
+        # and recheck the risk budget against a fresh quote before submitting the order.
+        quote = broker.last_price(sig.symbol)
+        cap = config.PAPER_CAPITAL + db.realized_pnl()
+        risk = min(config.RISK_PCT, rules.available_risk_pct(cap, positions, config.MAX_OPEN_RISK_PCT))
+        qty = rules.risk_qty(cap, risk, quote, sig.stop, config.MAX_NOTIONAL_PCT) if sig.stop is not None else None
+        if not qty or not math.isfinite(quote) or not sig.qty or not math.isfinite(sig.qty) or sig.qty <= 0 or quote <= sig.stop:
+            db.set_signal_status(sig.id, "failed")
+            notify(f"⚠️ Signal #{sig.id} skipped: invalid price/stop or no remaining risk budget."); return
+        fill = broker.market_buy(sig.symbol, min(sig.qty, qty))
         db.insert_trade(sig.id, sig.symbol, "buy", fill.qty, fill.price, broker.name, fill.order_id)
         db.open_position(sig.symbol, fill.qty, fill.price, sig.stop, entry_signal_id=sig.id)
         db.set_signal_status(sig.id, "executed")

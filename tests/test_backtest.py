@@ -36,7 +36,7 @@ def test_equity_defined_and_accounting_identity(frames):
 def test_risk_and_notional_cap_per_trade(frames):
     tr = run(frames)["trades"]
     for t in tr.itertuples():
-        risk = (t.entry / (1 + 0.0005) - t.stop0) * t.qty          # sized on the signal close, filled at open + slippage
+        risk = (t.entry / (1 + 0.0005) - t.stop0) * t.qty          # execution sizing is capped again at the fill price
         assert t.qty * t.entry <= 0.5 * t.capital * 1.01            # notional cap (50 %) never exceeded
         assert risk <= 0.01 * t.capital * 1.05                       # never risks more than 1 % (+ open gap tolerance)
 
@@ -124,3 +124,40 @@ def test_load_or_fetch_first_fetch_and_incremental(monkeypatch, tmp_path):
     assert calls[n_calls:] and calls[n_calls] > calls[0]                                    # resumed after the cached candles
     y = backtest.yearly(pd.Series(1.0, index=pd.Index(df2["ts"])), pd.DataFrame(), 1.0)
     assert list(y.year) == [2026]
+
+
+def test_first_window_bar_uses_actual_previous_candle(frames, monkeypatch):
+    p = Params(entry_mode='flip')
+    expected = backtest.rules.prepare(frames['BTC/USD'], p).set_index('ts')
+    start = expected.index[500].normalize()
+    observed = []
+    def capture(row, prev, *args):
+        observed.append(prev['close'])
+        return None
+    monkeypatch.setattr(backtest.rules, 'entry_stop', capture)
+    run(frames, p=p, start=str(start.date()))
+    assert observed[0] == expected.loc[start - pd.Timedelta(hours=4), 'close']
+
+
+def test_drawdown_includes_initial_capital():
+    eq = pd.Series([9900., 9800.], index=pd.date_range('2026-01-01', periods=2, tz='UTC'))
+    assert backtest.metrics(eq, pd.DataFrame(), 10000, 2190)['mdd'] == pytest.approx(-.02)
+
+
+def test_portfolio_risk_cap_limits_simultaneous_entries(frames):
+    # Disable filters so both symbols compete for the same remaining risk budget.
+    result = run(frames, p=Params(adx_min=0, breakout_len=0), risk_pct=1, max_open_risk_pct=.5)
+    for t in result['trades'].itertuples():
+        assert (t.entry - t.stop0) * t.qty <= t.capital * .005 + 1e-8
+
+
+def test_portfolio_budget_shared_by_same_candle_orders(monkeypatch):
+    df = make_ohlcv(np.full(60, 100.0))
+    def prepared(frame, p):
+        return frame.assign(ema=99., st=90., dir=1, adx=30., hh=99., ll=np.nan)
+    monkeypatch.setattr(backtest.rules, 'prepare', prepared)
+    result = backtest.simulate({'A': df, 'B': df}, ['A', 'B'], Params(ema_len=1, adx_len=1),
+                               risk_pct=1, max_open_risk_pct=1.5, fee=0, slippage=0)
+    assert len(result['open']) == 2
+    assert [p['qty'] for p in result['open']] == [10., 5.]
+    assert sum((p['entry'] - p['stop']) * p['qty'] for p in result['open']) == 150

@@ -25,6 +25,9 @@ class FakeBroker:
     def __init__(self, buy=100.0, sell=118.0):
         self.buy, self.sell = buy, sell
 
+    def last_price(self, symbol):
+        return self.buy
+
     def market_buy(self, symbol, qty):
         return Fill(self.buy, qty, None)
 
@@ -49,6 +52,7 @@ def env(monkeypatch):
     monkeypatch.setattr(executor.db, "set_signal_status", lambda sid, st: calls.setdefault("status", []).append((sid, st)))
     monkeypatch.setattr(executor.db, "insert_trade", lambda *a, **k: calls.setdefault("trades", []).append(a))
     monkeypatch.setattr(executor.db, "open_positions", lambda: [])
+    monkeypatch.setattr(executor.db, "realized_pnl", lambda: 0.0)
     monkeypatch.setattr(executor.db, "open_position_for", lambda s: None)
     monkeypatch.setattr(executor.db, "open_position", lambda *a, **k: calls.setdefault("open", []).append((a, k)) or 7)
     monkeypatch.setattr(executor.db, "close_position",
@@ -110,3 +114,28 @@ def test_exit_without_position_fails_gracefully(env):
     executor.handle(Decision(2, "auto", "strategy"))
     assert "close" not in calls and calls["status"] == [(2, "failed")]
     assert "no open position" in notifications(fake)[0]
+
+
+def test_quote_gap_down_through_stop_rejects_entry(env, monkeypatch):
+    fake, calls = env
+    monkeypatch.setattr(executor, 'broker', FakeBroker(buy=93))
+    executor.handle(Decision(1, 'yes', 'user'))
+    assert 'open' not in calls and calls['status'] == [(1, 'failed')]
+
+
+def test_quote_gap_up_caps_quantity(env, monkeypatch):
+    fake, calls = env
+    monkeypatch.setattr(executor, 'broker', FakeBroker(buy=150))
+    executor.handle(Decision(1, 'yes', 'user'))
+    args, _ = calls['open'][0]
+    assert args[1] < SIGNALS[1].qty
+    assert args[1] * (150 - 94) <= config.PAPER_CAPITAL * config.RISK_PCT / 100
+
+
+def test_executor_rechecks_portfolio_risk(env, monkeypatch):
+    fake, calls = env
+    monkeypatch.setattr(config, 'MAX_OPEN_RISK_PCT', 1)
+    monkeypatch.setattr(config, 'MAX_POSITIONS', 3)
+    monkeypatch.setattr(executor.db, 'open_positions', lambda: [dict(entry_price=100, stop=90, qty=10)])
+    executor.handle(Decision(1, 'yes', 'user'))
+    assert 'open' not in calls and calls['status'] == [(1, 'failed')]

@@ -68,10 +68,12 @@ def load_or_fetch(exchange_id: str, symbol: str, timeframe: str, since: str, dat
 
 def simulate(frames: dict[str, pd.DataFrame], symbols: list[str], p: Params, regime_symbol: str | None = None,
              capital0: float = 10_000.0, risk_pct: float = 1.0, max_positions: int = 2, max_notional_pct: float = 50.0,
-             fee: float = 0.004, slippage: float = 0.0005, start: str | None = None, end: str | None = None) -> dict:
+             fee: float = 0.008, slippage: float = 0.0005, start: str | None = None, end: str | None = None,
+             max_open_risk_pct: float = 0.0) -> dict:
     """Portfolio simulation. frames: symbol -> OHLCV (must include regime_symbol if set)."""
     needed = list(dict.fromkeys(symbols + ([regime_symbol] if regime_symbol else [])))
-    prep = {s: rules.prepare(frames[s], p).iloc[p.warmup:].set_index("ts") for s in needed}
+    full = {s: rules.prepare(frames[s], p).set_index("ts") for s in needed}
+    prep = {s: full[s].iloc[p.warmup:] for s in needed}
     idx = None
     for s in needed:
         idx = prep[s].index if idx is None else idx.intersection(prep[s].index)
@@ -83,6 +85,7 @@ def simulate(frames: dict[str, pd.DataFrame], symbols: list[str], p: Params, reg
     if len(idx) < 2:
         raise ValueError("no overlapping candles in the requested window")
     bars = {s: prep[s].loc[idx].to_dict("records") for s in needed}
+    previous = {s: full[s].shift(1).loc[idx].to_dict("records") for s in needed}
     n = len(idx)
 
     realized, positions, pending, trades = 0.0, {}, {}, []
@@ -106,9 +109,12 @@ def simulate(frames: dict[str, pd.DataFrame], symbols: list[str], p: Params, reg
             elif order["kind"] == "entry" and s not in positions and len(positions) < max_positions:
                 price = o * (1 + slippage)
                 capital = capital0 + realized
-                qty = rules.risk_qty(capital, risk_pct, order["close"], order["stop"], max_notional_pct)
-                if not qty:
+                portfolio = [dict(entry_price=v['entry'], stop=v['stop'], qty=v['qty']) for v in positions.values()]
+                risk = min(risk_pct, rules.available_risk_pct(capital, portfolio, max_open_risk_pct))
+                limit_qty = rules.risk_qty(capital, risk, price, order["stop"], max_notional_pct)
+                if not limit_qty:
                     continue
+                qty = min(order["qty"], limit_qty)
                 fee_in = price * qty * fee
                 realized -= fee_in
                 positions[s] = dict(entry=price, qty=qty, stop=order["stop"], stop0=order["stop"], ts=idx[i], i0=i,
@@ -118,18 +124,20 @@ def simulate(frames: dict[str, pd.DataFrame], symbols: list[str], p: Params, reg
         # 2) signals at this candle's close
         market_ok = rules.market_uptrend(bars[regime_symbol][i]) if regime_symbol else True
         for s in symbols:
-            row, prev = bars[s][i], bars[s][i - 1]
+            row, prev = bars[s][i], previous[s][i]
             if s in positions:
                 pos = positions[s]
                 pos["stop"] = rules.trail_stop(row, pos["stop"])
-                reason = rules.exit_reason(row, pos["stop"])
+                reason = rules.exit_reason(row, pos["stop"], p)
                 if reason:
                     pending[s] = dict(kind="exit", reason=reason)
             else:
                 slots = max_positions - len(positions) - sum(1 for o in pending.values() if o["kind"] == "entry")
                 stop = rules.entry_stop(row, prev, p, market_ok if s != regime_symbol else True)
                 if stop is not None and slots > 0:
-                    pending[s] = dict(kind="entry", stop=stop, close=row["close"])
+                    qty = rules.risk_qty(capital0 + realized, risk_pct, row["close"], stop, max_notional_pct)
+                    if qty:
+                        pending[s] = dict(kind="entry", stop=stop, qty=qty)
 
         # 3) mark to market
         equity[i] = capital0 + realized + sum((bars[s][i]["close"] - pos["entry"]) * pos["qty"] for s, pos in positions.items())
@@ -155,7 +163,7 @@ def metrics(equity: pd.Series, trades: pd.DataFrame, capital0: float, bars_per_y
     r = equity.pct_change().dropna()
     years = len(equity) / bars_per_year
     end = equity.iloc[-1] / capital0
-    dd = equity / equity.cummax() - 1
+    dd = equity / equity.cummax().clip(lower=capital0) - 1
     m = dict(total=end - 1, cagr=end ** (1 / years) - 1 if years > 0 else float("nan"), mdd=dd.min(),
              sharpe=r.mean() / r.std() * math.sqrt(bars_per_year) if r.std() > 0 else 0.0, years=years, exposure=exposure)
     m["calmar"] = m["cagr"] / -m["mdd"] if m["mdd"] < 0 else float("nan")
@@ -200,7 +208,8 @@ def params_from_config(legacy: bool = False) -> Params:
     if legacy:
         return Params(ema_len=config.EMA_LEN, st_len=config.ST_LEN, st_mult=config.ST_MULT, adx_min=0, breakout_len=0, entry_mode="flip")
     return Params(ema_len=config.EMA_LEN, st_len=config.ST_LEN, st_mult=config.ST_MULT, adx_len=config.ADX_LEN,
-                  adx_min=config.ADX_MIN, breakout_len=config.BREAKOUT_LEN, entry_mode=config.ENTRY_MODE)
+                  adx_min=config.ADX_MIN, breakout_len=config.BREAKOUT_LEN, entry_mode=config.ENTRY_MODE,
+                  exit_len=config.EXIT_LEN, adx_rising=config.ADX_RISING)
 
 
 def main(argv=None):
@@ -212,10 +221,11 @@ def main(argv=None):
     ap.add_argument("--since", default="2017-08-01", help="first candle to download")
     ap.add_argument("--start", default=None, help="evaluation window start (YYYY-MM-DD)")
     ap.add_argument("--end", default=None, help="evaluation window end (exclusive)")
-    ap.add_argument("--fee", type=float, default=0.004, help="taker fee per side (0.004 = 0.4 %%)")
+    ap.add_argument("--fee", type=float, default=0.008, help="taker fee per side (0.008 = 0.8 %%); set your actual tier")
     ap.add_argument("--slippage", type=float, default=0.0005)
     ap.add_argument("--capital", type=float, default=config.PAPER_CAPITAL)
     ap.add_argument("--risk", type=float, default=config.RISK_PCT)
+    ap.add_argument("--max-open-risk", type=float, default=config.MAX_OPEN_RISK_PCT, help="total entry-to-stop risk in percent; 0 disables")
     ap.add_argument("--max-positions", type=int, default=config.MAX_POSITIONS)
     ap.add_argument("--max-notional", type=float, default=config.MAX_NOTIONAL_PCT)
     ap.add_argument("--legacy", action="store_true", help="v2 rules: entry only on the Supertrend flip, no ADX/breakout/regime")
@@ -237,7 +247,7 @@ def main(argv=None):
     import ccxt
     bpy = 365 * 86400 / ccxt.Exchange().parse_timeframe(a.timeframe)
     common = dict(capital0=a.capital, risk_pct=a.risk, max_positions=a.max_positions, max_notional_pct=a.max_notional,
-                  fee=a.fee, slippage=a.slippage, start=a.start, end=a.end)
+                  fee=a.fee, slippage=a.slippage, start=a.start, end=a.end, max_open_risk_pct=a.max_open_risk)
 
     runs = []
     if not a.legacy or a.compare:

@@ -18,13 +18,15 @@ ex = ccxt.kraken({"enableRateLimit": True})
 TF_SECONDS = ccxt.Exchange.parse_timeframe(config.TIMEFRAME)
 
 P = rules.Params(ema_len=config.EMA_LEN, st_len=config.ST_LEN, st_mult=config.ST_MULT, adx_len=config.ADX_LEN,
-                 adx_min=config.ADX_MIN, breakout_len=config.BREAKOUT_LEN, entry_mode=config.ENTRY_MODE)
+                 adx_min=config.ADX_MIN, breakout_len=config.BREAKOUT_LEN, entry_mode=config.ENTRY_MODE,
+                 exit_len=config.EXIT_LEN, adx_rising=config.ADX_RISING)
 
 CHECK_LABELS = {                     # shown in /scan and on the signal card
     "supertrend_green": "Supertrend grün",
     "above_ema": f"Close > EMA{config.EMA_LEN}",
     "supertrend_flip": "Supertrend-Flip",
     "adx": f"ADX > {config.ADX_MIN:g}",
+    "adx_rising": "ADX steigt",
     "breakout": f"{config.BREAKOUT_LEN}-Candle-Hoch",
     "market": f"Regime {config.REGIME_SYMBOL}",
     "stop_below_close": "Stop unter Kurs",
@@ -96,6 +98,8 @@ def entry_reason(row, checks) -> str:
     bits = [f"ST grün (Linie {float(row['st']):.2f})", f"Close > EMA{config.EMA_LEN} {float(row['ema']):.2f}"]
     if "adx" in checks:
         bits.append(f"ADX {float(row['adx']):.1f} > {config.ADX_MIN:g}")
+    if "adx_rising" in checks:
+        bits.append("ADX steigt")
     if "breakout" in checks:
         bits.append(f"neues {config.BREAKOUT_LEN}-Candle-Hoch (> {float(row['hh']):.2f})")
     if config.REGIME_SYMBOL:
@@ -131,7 +135,9 @@ def evaluate(symbol: str, df: pd.DataFrame, market_ok: bool = True):
             elif in_cooldown(symbol, df):
                 log.info("%s: entry conditions met but in cooldown after a rejected signal", symbol)
             else:
-                qty = rules.risk_qty(capital(), config.RISK_PCT, close, st_line, config.MAX_NOTIONAL_PCT)
+                cap = capital()
+                risk = min(config.RISK_PCT, rules.available_risk_pct(cap, db.open_positions(), config.MAX_OPEN_RISK_PCT))
+                qty = rules.risk_qty(cap, risk, close, st_line, config.MAX_NOTIONAL_PCT)
                 if qty:
                     context = {k: v for k, v in state.items() if k not in ("evaluated_at", "in_position", "stop")}
                     emit_for_approval(Signal(None, ts_iso, symbol, "entry", "buy", close, st_line, qty,
@@ -141,7 +147,7 @@ def evaluate(symbol: str, df: pd.DataFrame, market_ok: bool = True):
         new_stop = rules.trail_stop(row, current_stop)              # trails upward only
         if current_stop is None or new_stop > current_stop:
             db.update_stop(pos["id"], new_stop, old_stop=current_stop, candle_ts=ts_iso, reason="Supertrend trail")
-        exit_reason = rules.exit_reason(row, new_stop)
+        exit_reason = rules.exit_reason(row, new_stop, P)
         if exit_reason:
             held = postmortem.candles_since(df, pos["opened_at"], TF_SECONDS) if pos.get("opened_at") else df.iloc[0:0]
             exc = postmortem.excursion(held, float(pos["entry_price"]))
@@ -154,14 +160,17 @@ def evaluate(symbol: str, df: pd.DataFrame, market_ok: bool = True):
     r.set(key, ts_iso)
 
 
-def market_regime(frames: dict[str, pd.DataFrame]) -> bool:
-    """Uptrend of the regime symbol (above EMA and Supertrend green). True when the filter is off or data is missing."""
+def market_regime(frames: dict[str, pd.DataFrame], asof=None) -> bool:
+    """Fail closed when the enabled regime is missing or not aligned with the traded candle."""
     sym = config.REGIME_SYMBOL
     if not sym:
         return True
     if sym not in frames or len(frames[sym]) < P.warmup:
-        log.warning("regime symbol %s has no data yet, not gating entries this round", sym)
-        return True
+        log.warning("regime symbol %s has no data yet, blocking new entries", sym)
+        return False
+    if asof is not None and frames[sym]["ts"].iloc[-1] != asof:
+        log.warning("regime symbol %s candle is not aligned, blocking new entries", sym)
+        return False
     return rules.market_uptrend(rules.prepare(frames[sym], P).iloc[-1])
 
 
@@ -178,12 +187,12 @@ def main():
                 frames[symbol] = fetch_closed_candles(symbol)
             except Exception as exc:                      # keep the loop alive
                 log.exception("%s: fetch failed: %s", symbol, exc)
-        market_ok = market_regime(frames)
         for symbol in config.SYMBOLS:
             if symbol not in frames:
                 continue
             try:
-                evaluate(symbol, frames[symbol], market_ok if symbol != config.REGIME_SYMBOL else True)
+                market_ok = market_regime(frames, frames[symbol]["ts"].iloc[-1]) if symbol != config.REGIME_SYMBOL else True
+                evaluate(symbol, frames[symbol], market_ok)
             except Exception as exc:
                 log.exception("%s: %s", symbol, exc)
         time.sleep(config.POLL_SECONDS)

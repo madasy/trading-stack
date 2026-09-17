@@ -15,6 +15,7 @@ Strategy v3 "Trend-Breakout", evaluated on closed candles only:
 entry_mode="flip" together with adx_min=0, breakout_len=0 and no regime symbol reproduces v2.
 """
 from dataclasses import dataclass
+import math
 
 import pandas as pd
 
@@ -30,11 +31,13 @@ class Params:
     adx_min: float = 20.0       # 0 disables the ADX filter
     breakout_len: int = 20      # 0 disables the breakout confirmation
     entry_mode: str = "state"   # state (v3) | flip (v2: only on the red->green candle)
+    exit_len: int = 0           # close below previous N-bar low; 0 keeps the v3 exit
+    adx_rising: bool = False    # optional entry confirmation; evaluated on closed bars
 
     @property
     def warmup(self) -> int:
         """Candles needed before signals are trustworthy."""
-        return max(self.ema_len, self.breakout_len, 3 * self.adx_len) + 5
+        return max(self.ema_len, self.breakout_len, self.exit_len, self.st_len, 3 * self.adx_len) + 5
 
 
 def prepare(df: pd.DataFrame, p: Params) -> pd.DataFrame:
@@ -47,6 +50,7 @@ def prepare(df: pd.DataFrame, p: Params) -> pd.DataFrame:
     out["adx"] = adx(out, p.adx_len)
     # highest high of the *previous* breakout_len candles (excludes the current candle)
     out["hh"] = out["high"].rolling(p.breakout_len).max().shift(1) if p.breakout_len > 0 else float("nan")
+    out["ll"] = out["low"].rolling(p.exit_len).min().shift(1) if p.exit_len > 0 else float("nan")
     return out
 
 
@@ -65,6 +69,8 @@ def entry_checks(row, prev, p: Params, market_ok: bool = True) -> dict[str, bool
         checks["supertrend_flip"] = bool(prev["dir"] == -1 and row["dir"] == 1)
     if p.adx_min > 0:
         checks["adx"] = bool(row["adx"] > p.adx_min)          # NaN during warm-up -> False
+    if p.adx_rising:
+        checks["adx_rising"] = bool(row["adx"] > prev["adx"])
     if p.breakout_len > 0:
         checks["breakout"] = bool(row["close"] > row["hh"])   # NaN during warm-up -> False
     checks["market"] = bool(market_ok)
@@ -87,20 +93,45 @@ def trail_stop(row, current_stop: float | None) -> float:
     return max(current_stop, st_line) if row["dir"] == 1 else current_stop
 
 
-def exit_reason(row, stop: float) -> str | None:
+def exit_reason(row, stop: float, p: Params | None = None) -> str | None:
     if row["dir"] == -1:
         return "Supertrend flipped red"
     if row["close"] <= stop:
         return f"Close {row['close']:.2f} below stop {stop:.2f}"
+    if p is not None and p.exit_len > 0 and row["close"] < row["ll"]:
+        return f"Close {row['close']:.2f} below {p.exit_len}-candle low {row['ll']:.2f}"
     return None
 
 
 def risk_qty(capital: float, risk_pct: float, entry: float, stop: float, max_notional_pct: float = 0) -> float | None:
     """Quantity so that (entry - stop) * qty == risk_pct % of capital, capped at max_notional_pct % of capital."""
+    if not all(math.isfinite(x) for x in (capital, risk_pct, entry, stop, max_notional_pct)):
+        return None
     per_unit = entry - stop
-    if per_unit <= 0 or capital <= 0 or entry <= 0:
+    if per_unit <= 0 or capital <= 0 or entry <= 0 or risk_pct <= 0:
         return None
     qty = capital * risk_pct / 100 / per_unit
     if max_notional_pct > 0:
         qty = min(qty, capital * max_notional_pct / 100 / entry)
-    return round(qty, 6)
+    return math.floor(qty * 1_000_000) / 1_000_000
+
+
+def available_risk_pct(capital: float, positions: list[dict], cap_pct: float) -> float:
+    """Remaining portfolio risk as % of realized capital; unknown stops block new risk.
+
+    This budgets loss from entry to stop, not gaps, trading costs or profit giveback.
+    A non-positive cap disables the limit for historical comparisons.
+    """
+    if cap_pct <= 0:
+        return float("inf")
+    if capital <= 0 or not math.isfinite(capital):
+        return 0.0
+    used = 0.0
+    for pos in positions:
+        if pos.get("stop") is None:
+            return 0.0
+        entry, stop, qty = (float(pos[k]) for k in ("entry_price", "stop", "qty"))
+        if not all(math.isfinite(v) for v in (entry, stop, qty)):
+            return 0.0
+        used += max(0.0, entry - stop) * qty
+    return max(0.0, cap_pct - used / capital * 100)

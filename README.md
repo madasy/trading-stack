@@ -5,6 +5,9 @@ Trendstärke-Filter, Einstieg auf ein neues 20-Candle-Hoch, BTC-Regime für die 
 4h, long-only, Spot. Exit über den Supertrend (Flip auf rot oder Close unter dem nachgezogenen Stop).
 Datenquelle: Kraken (public API – im Paper-Modus kein API-Key nötig).
 
+Review vom 17.09.2026: [Analyse und reproduzierbarer Vergleich](docs/strategy-review-2026-09-17.md).
+Neue Defaults: 0,5 % Risiko pro Trade, 1 % gesamtes offenes Stop-Risiko; Entry-/Exit-Regeln bleiben v3.
+
 Warum v3 und wie sie bewertet wurde: [docs/superpowers/specs/2026-09-02-strategy-v3-design.md](docs/superpowers/specs/2026-09-02-strategy-v3-design.md).
 
 ```
@@ -31,7 +34,7 @@ Alle Bedingungen werden auf **geschlossenen** Candles geprüft (kein Repainting)
 
 `ENTRY_MODE=flip`, `ADX_MIN=0`, `BREAKOUT_LEN=0`, `REGIME_SYMBOL=off` stellt die alte v2-Logik wieder her.
 
-### Backtest 2017-08 – 2026-09 (Binance BTC + ETH 4h, 1 % Risiko, 0,40 % Gebühr + 0,05 % Slippage)
+### Historischer, hier nicht neu reproduzierter Backtest 2017-08 – 2026-09 (Binance BTC + ETH 4h, 1 % Risiko, 0,40 % Gebühr + 0,05 % Slippage)
 
 | | CAGR | Max Drawdown | Sharpe | Profit-Faktor | Trades/Jahr | Trefferquote | OOS 2023–26 CAGR |
 |---|---|---|---|---|---|---|---|
@@ -52,7 +55,9 @@ python -m app.backtest --exchange bitstamp --symbols BTC/USD,ETH/USD
 python -m app.backtest --help
 ```
 
-Der Backtester benutzt exakt dieselben Regeln wie der Live-Service (`app/rules.py`). Kraken liefert nur
+Der Backtester teilt die Signal- und Risikoregeln mit dem Service (`app/rules.py`).
+Er füllt zum nächsten Open mit Gebühren und Slippage; Paper nutzt aktuelle Ticker und erfasst derzeit keine Gebühren.
+Default im Backtest: 0,8 % Gebühr pro Seite (mit `--fee` an den tatsächlichen Tarif anpassen). Kraken liefert nur
 720 Candles, deshalb ist Binance die Standardquelle (`BTC/USD` wird auf `BTC/USDT` gemappt; Schlusskurse
 weichen ~0,1 % ab). Candles werden in `data/` gecacht und inkrementell nachgeladen.
 
@@ -80,7 +85,9 @@ python -m pytest -q
 | `SIGNAL_TTL_MIN` | 60 | unbeantwortete Signale verfallen nach X Minuten |
 | `REJECT_COOLDOWN_BARS` | 6 | Candles ohne neues Entry-Signal nach einem abgelehnten Signal |
 | `PAPER_CAPITAL` | 10000 | Start-Kapital (Paper) |
-| `RISK_PCT` | 1.0 | **Prozent** des Kapitals Risiko pro Trade (Entry − Stop) |
+| `RISK_PCT` | 0.5 | **Prozent** des Kapitals Risiko pro Trade (Entry − Stop) |
+| `MAX_OPEN_RISK_PCT` | 1.0 | Gesamtes Entry-zu-Stop-Risiko in % des realisierten Kapitals; Executor prüft vor jedem Kauf erneut. 0 deaktiviert das Limit. |
+| `ADX_RISING` / `EXIT_LEN` | false / 0 | Experimentelle ADX-Steigungsbestätigung / Exit unter vorherigem N-Candle-Tief; im Review nicht zur Aktivierung empfohlen. |
 | `MAX_NOTIONAL_PCT` | 100 ÷ `MAX_POSITIONS` | Obergrenze pro Position in % des Kapitals; Default hält alle Positionen zusammen unter 100 % (Spot, kein Hebel) |
 | `MAX_POSITIONS` | 2 | max. gleichzeitig offene Positionen |
 | `AUTO_EXIT` | true | Exits ohne Rückfrage; `false` = auch Exits per Ja/Nein |

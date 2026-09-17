@@ -129,6 +129,14 @@ def test_market_regime_helper(trend_up, trend_down, monkeypatch):
     monkeypatch.setattr(config, "REGIME_SYMBOL", "BTC/USD")
     assert strategy.market_regime({"BTC/USD": trend_up}) is True
     assert strategy.market_regime({"BTC/USD": trend_down}) is False
-    assert strategy.market_regime({}) is True                       # no data yet -> do not block
+    assert strategy.market_regime({}) is False                      # enabled filter fails closed
     monkeypatch.setattr(config, "REGIME_SYMBOL", "")
     assert strategy.market_regime({"BTC/USD": trend_down}) is True  # filter off
+
+
+def test_regime_requires_same_candle(trend_up, monkeypatch):
+    monkeypatch.setattr(config, 'REGIME_SYMBOL', 'BTC/USD')
+    last = trend_up.ts.iloc[-1]
+    assert strategy.market_regime({'BTC/USD': trend_up}, last) is True
+    assert strategy.market_regime({'BTC/USD': trend_up}, last + pd.Timedelta(hours=4)) is False
+    assert strategy.market_regime({'BTC/USD': trend_up}, last - pd.Timedelta(hours=4)) is False

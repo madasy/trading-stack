@@ -25,6 +25,8 @@ ADX_LEN           = _env("ADX_LEN", 14, int)
 ADX_MIN           = _env("ADX_MIN", 20.0, float)       # entries only while ADX > this; 0 = off
 BREAKOUT_LEN      = _env("BREAKOUT_LEN", 20, int)      # close must exceed the high of the last N candles; 0 = off
 ENTRY_MODE        = _env("ENTRY_MODE", "state")        # state (v3) | flip (v2: only on the red->green candle)
+EXIT_LEN          = _env("EXIT_LEN", 0, int)            # optional prior-N-candle low exit; 0 = off
+ADX_RISING        = _env("ADX_RISING", False, bool)
 _regime           = _env("REGIME_SYMBOL", "BTC/USD").strip()
 REGIME_SYMBOL     = "" if _regime.lower() in ("off", "none", "0") else _regime   # gates entries in the other symbols
 POLL_SECONDS      = _env("POLL_SECONDS", 120, int)
@@ -32,7 +34,8 @@ SIGNAL_TTL_MIN    = _env("SIGNAL_TTL_MIN", 60, int)
 REJECT_COOLDOWN_BARS = _env("REJECT_COOLDOWN_BARS", 6, int)   # candles without a new entry signal after a rejection
 
 PAPER_CAPITAL     = _env("PAPER_CAPITAL", 10000.0, float)
-RISK_PCT          = _env("RISK_PCT", 1.0, float)      # percent of capital risked per trade
+RISK_PCT          = _env("RISK_PCT", 0.5, float)      # percent of capital risked per trade
+MAX_OPEN_RISK_PCT = _env("MAX_OPEN_RISK_PCT", 1.0, float)  # combined entry-to-stop risk; 0 = off
 MAX_POSITIONS     = _env("MAX_POSITIONS", 2, int)
 MAX_NOTIONAL_PCT  = _env("MAX_NOTIONAL_PCT", 100.0 / MAX_POSITIONS, float)   # size cap per position in % of capital; default keeps all positions <= 100 % (spot)
 AUTO_EXIT         = _env("AUTO_EXIT", True, bool)

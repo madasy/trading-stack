@@ -1,0 +1,14 @@
+{
+  "data/binance_BTCUSDT_4h.csv": {
+    "sha256": "c51571d136d0606b661701a1b51af594ea559cb797f29dcf35de70e83337c7ad",
+    "bytes": 936200
+  },
+  "data/binance_ETHUSDT_4h.csv": {
+    "sha256": "46793bb48adb069fa35c86be6eac068684488ad0f3313e07abfeb718c067dcd9",
+    "bytes": 881432
+  },
+  "data/binance_SOLUSDT_4h.csv": {
+    "sha256": "7f7ce456925004960233e66d6275ad6b0466dec48ce559fb39beefffa0db7bd1",
+    "bytes": 803565
+  }
+}

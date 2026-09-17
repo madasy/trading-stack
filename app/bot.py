@@ -148,6 +148,8 @@ async def cmd_status(m: Message):
         f"Strategy: {config.TIMEFRAME} EMA{config.EMA_LEN} + ST({config.ST_LEN},{config.ST_MULT})"
         f"{' + ADX>' + format(config.ADX_MIN, 'g') if config.ADX_MIN > 0 else ''}"
         f"{' + Breakout' + str(config.BREAKOUT_LEN) if config.BREAKOUT_LEN > 0 else ''}"
+        f"{' + ADX rising' if config.ADX_RISING else ''}"
+        f"{' + ExitLow' + str(config.EXIT_LEN) if config.EXIT_LEN > 0 else ''}"
         f"{' + Regime ' + config.REGIME_SYMBOL if config.REGIME_SYMBOL else ''}\n"
         f"Auto-Entscheider: {await auto_mode()}\n\n"
         + await asyncio.to_thread(report.market_check),
